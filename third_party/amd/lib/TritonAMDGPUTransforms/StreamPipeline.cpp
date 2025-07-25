@@ -977,7 +977,9 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
 
 FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
                                    int globalPrefetch, int localPrefetch,
-                                   bool useAsyncCopy, bool waitAtTail) {
+                                   bool useAsyncCopy, bool waitAtTail,
+                                   bool keepPredicateStage,
+                                   bool customEpiloguePeeling) {
 
   triton::AMD::ModuleAxisInfoAnalysis axisInfoAnalysis(
       forOp->getParentOfType<ModuleOp>());
@@ -1011,7 +1013,7 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
 
   tt::PipeliningOption options;
   options.supportDynamicLoops = true;
-  options.peelEpilogue = true;
+  options.peelEpilogue = false;
   options.predicateFn = streamPredication;
   // Annotate loadOp in prologue for further moving up
   options.annotateFn = [](Operation *op,
@@ -1046,7 +1048,15 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
                        std::vector<std::pair<Operation *, unsigned>> &s) {
         s = std::move(coarseSchedule);
       };
-
+  if (keepPredicateStage || customEpiloguePeeling) {
+    options.emitPredicateStageFn =
+        [](RewriterBase &rewriter, Value inductionVar, Value upperBound,
+           Value step, uint64_t maxStage, uint64_t stage) {
+          return rewriter.create<triton::gpu::PredicateStageOp>(
+              inductionVar.getLoc(), inductionVar, upperBound, step, maxStage,
+              stage);
+        };
+  }
   LDBG("Loop before sending to expander:\n" << *forOp);
 
   IRRewriter rewriter(forOp);
@@ -1080,7 +1090,6 @@ struct PipelinePass : impl::TritonAMDGPUStreamPipelineBase<PipelinePass> {
         loops.push_back(forOp);
     });
 
-    bool customEpiloguePeeling = false;
     DenseSet<ttg::MaskOp> peeledMaskOps;
     auto processPeeledEpilogueOp =
         tt::createProcessPeeledEpilogueFn(peeledMaskOps);
@@ -1090,13 +1099,17 @@ struct PipelinePass : impl::TritonAMDGPUStreamPipelineBase<PipelinePass> {
         LDBG("Loop not safe to pipeline:\n" << *forOp);
         continue;
       }
+
+      bool keepPredicateStage = forOp->hasAttr("__test_keep_predicate_stage");
+      bool customEpiloguePeeling = !keepPredicateStage;
+
       // i.e., we can still disable `waitAtTail` by explicitly disabling
       // pingpong, which is the only use case of this scheduling variant.
       int numStagesThis = tt::getNumStagesOrDefault(forOp, numStages);
       bool waitAtTail = usePingpong && (numStagesThis == 3) && useAsyncCopy;
-      FailureOr<scf::ForOp> newForOp =
-          pipelineLoop(forOp, numStagesThis, globalPrefetch, localPrefetch,
-                       useAsyncCopy, waitAtTail);
+      FailureOr<scf::ForOp> newForOp = pipelineLoop(
+          forOp, numStagesThis, globalPrefetch, localPrefetch, useAsyncCopy,
+          waitAtTail, keepPredicateStage, customEpiloguePeeling);
       if (failed(newForOp)) {
         continue;
       }
