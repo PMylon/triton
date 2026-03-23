@@ -347,11 +347,12 @@ def gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel(a_ptr, b_ptr, c_ptr,
     epilogue_lb = loop_ub - (NUM_BUFFERS - 1)
     for i in range(0, loop_ub):
         # SubIteration0
+        # WMMA Subtile0
+        accumulator = ttgl.amd.gfx1250.wmma(a0, b0, accumulator)
         # LDS load SubIteration1
         a1, b1 = lds_subtile_load(consumer, SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
                                   NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
-        # WMMA Subtile0
-        accumulator = ttgl.amd.gfx1250.wmma(a0, b0, accumulator)
+        ttgl.amd.sched_barrier(0)
 
         # SubIteration1
         # TDM load for next tile
@@ -362,26 +363,28 @@ def gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel(a_ptr, b_ptr, c_ptr,
         # We prefetch distance - 1 iterations ahead because producer is already incremented by 1
         issue_l2_prefetches(L2_PREFETCH_DISTANCE - 1, producer, a_desc, b_desc, 0, 0, BLOCK_K, TRANSPOSE_B)
 
+        # WMMA Subtile1
+        accumulator = ttgl.amd.gfx1250.wmma(a1, b1, accumulator)
         # LDS load SubIteration2
         a2, b2 = lds_subtile_load(consumer, 2 * SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
                                   NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
-        # WMMA Subtile1
-        accumulator = ttgl.amd.gfx1250.wmma(a1, b1, accumulator)
+        ttgl.amd.sched_barrier(0)
 
         # SubIteration2
+        # WMMA Subtile2
+        accumulator = ttgl.amd.gfx1250.wmma(a2, b2, accumulator)
         # LDS load SubIteration3
         a3, b3 = lds_subtile_load(consumer, 3 * SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
                                   NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
-        # WMMA Subtile2
-        accumulator = ttgl.amd.gfx1250.wmma(a2, b2, accumulator)
+        ttgl.amd.sched_barrier(0)
 
         # SubIteration3
         consumer += 1
         ttgl.amd.gfx1250.tdm.async_wait((NUM_BUFFERS - 2) * 2)
-        # LDS load SubIteration0 for next tile
+        accumulator = ttgl.amd.gfx1250.wmma(a3, b3, accumulator)
         a0, b0 = lds_subtile_load(consumer, 0, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B, NUM_BUFFERS,
                                   TRANSPOSE_B, SUBTILE_LEN)
-        accumulator = ttgl.amd.gfx1250.wmma(a3, b3, accumulator)
+        ttgl.amd.sched_barrier(0)
 
     offs_cm = pid_m * BLOCK_M + ttgl.arange(0, BLOCK_M, layout=ttgl.SliceLayout(1, WMMA_LAYOUT))
     offs_cn = pid_n * BLOCK_N + ttgl.arange(0, BLOCK_N, layout=ttgl.SliceLayout(0, WMMA_LAYOUT))

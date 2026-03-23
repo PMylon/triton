@@ -1094,7 +1094,10 @@ void init_gluon_ir(py::module &&m) {
                border->setAttr("triton.warp_pipeline.priority",
                                IntegerAttr::get(i32Ty, priority));
              }
-           });
+           })
+      .def("create_sched_barrier", [](GluonOpBuilder &self, int mask) {
+        self.create<ROCDL::SchedBarrier>(mask);
+      });
 
   m.def(
       "compute_tmem_reg_layout",
