@@ -353,14 +353,7 @@ def gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel(a_ptr, b_ptr, c_ptr,
         pred = i - epilogue_lb
         pred = (pred >> 31) & 1
         # SubIteration0
-        # LDS load SubIteration1
-        a1, b1 = lds_subtile_load(consumer, SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
-                                  NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
-        # WMMA Subtile0
-        accumulator = ttgl.amd.gfx1250.wmma(a0, b0, accumulator)
-
-        # SubIteration1
-        # TDM load for next tile
+        # TDM load for next tile (issued early for better latency hiding)
         # If we are in epilogue, we have already issued our tile loads
         producer = issue_loads(producer, a_desc, b_desc, 0, 0, a_buffer, b_buffer, BLOCK_K, NUM_BUFFERS, TRANSPOSE_B,
                                pred=pred)
@@ -368,6 +361,13 @@ def gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel(a_ptr, b_ptr, c_ptr,
         # We prefetch distance - 1 iterations ahead because producer is already incremented by 1
         issue_l2_prefetches(L2_PREFETCH_DISTANCE - 1, producer, a_desc, b_desc, 0, 0, BLOCK_K, TRANSPOSE_B)
 
+        # LDS load SubIteration1
+        a1, b1 = lds_subtile_load(consumer, SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
+                                  NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
+        # WMMA Subtile0
+        accumulator = ttgl.amd.gfx1250.wmma(a0, b0, accumulator)
+
+        # SubIteration1
         # LDS load SubIteration2
         a2, b2 = lds_subtile_load(consumer, 2 * SUBTILE_LEN, a_buffer, OPERAND_LAYOUT_A, b_buffer, OPERAND_LAYOUT_B,
                                   NUM_BUFFERS, TRANSPOSE_B, SUBTILE_LEN)
