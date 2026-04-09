@@ -108,12 +108,10 @@ struct MakeTensorDescOpConversion
     auto result = op.getResult();
 
     auto tensorDescTy = result.getType();
-    auto blockTy = tensorDescTy.getBlockType();
-    auto sharedEnc = blockTy.getEncoding();
+    auto sharedEnc = tensorDescTy.getSharedLayout();
     if (!sharedEnc) {
-      if (!sharedEnc)
-        return rewriter.notifyMatchFailure(
-            op, "Descriptor has no shared memory layout assigned.");
+      return rewriter.notifyMatchFailure(
+          op, "Descriptor has no shared memory layout assigned.");
     }
     unsigned padInterval = 0;
     unsigned padAmount = 0;
@@ -126,8 +124,8 @@ struct MakeTensorDescOpConversion
     }
 
     Type elementType =
-        getTypeConverter()->convertType(blockTy.getElementType());
-    SmallVector<int64_t> blockShape = to_vector(blockTy.getShape());
+        getTypeConverter()->convertType(tensorDescTy.getElementType());
+    SmallVector<int64_t> blockShape = to_vector(tensorDescTy.getShape());
     int numWarps = lookupNumWarps(op);
     auto shapePerCTA = triton::gpu::getShapePerCTA(sharedEnc, blockShape);
 
