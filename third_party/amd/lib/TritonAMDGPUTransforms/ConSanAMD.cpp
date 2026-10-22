@@ -1,6 +1,8 @@
 #include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "TritonAMDGPUTransforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonInstrument/IR/FunctionBuilder.h"
 #include "triton/Dialect/TritonInstrument/Transforms/ConSanTargetHooks.h"
 
@@ -157,12 +159,32 @@ public:
     return nullptr;
   }
 
+  // The native cluster barrier synchronizes execution only. The fences make
+  // CTA0's state initialization and lock release visible before other CTAs
+  // acquire the lock. This hook is used only for startup synchronization at
+  // the kernel's top level. AMD scatters access only the current CTA's shared
+  // memory, so their checks use CTA barriers.
   SmallVector<Operation *>
   createInitClusterBarrier(ImplicitLocOpBuilder &b) const override {
-    auto arrive = ttag::ClusterBarrierArriveOp::create(b, b.getLoc());
-    auto wait = ttag::ClusterBarrierWaitOp::create(b, b.getLoc());
-    return {arrive.getOperation(), wait.getOperation()};
+    Location loc = b.getLoc();
+    LLVM::FenceOp::create(b, loc, LLVM::AtomicOrdering::release, "cluster");
+    auto arrive = ttag::ClusterBarrierArriveOp::create(b, loc);
+    SmallVector<Operation *> barriers = {arrive};
+    // Every warp must execute the startup cluster wait. Otherwise, their next
+    // cluster wait could consume the startup completion and return early.
+    // All warps in the CTA must finish the startup wait before the CTA signals
+    // another cluster arrival, so they join after the wait.
+    triton::emitClusterSyncForAllWarps(
+        b, loc, arrive,
+        [&](OpBuilder &rb) {
+          barriers.push_back(ttag::ClusterBarrierWaitOp::create(rb, loc));
+        },
+        /*joinWarps=*/true);
+    LLVM::FenceOp::create(b, loc, LLVM::AtomicOrdering::acquire, "cluster");
+    return barriers;
   }
+
+  bool supportsCrossCTASharedMemory() const override { return false; }
 
   bool hasUnsummarizableCalleeState(Operation *op) const override {
     return isa<ttag::ClusterBarrierArriveOp, ttag::ClusterBarrierWaitOp>(op);
